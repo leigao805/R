@@ -1030,3 +1030,220 @@ path <- "C:\Users\74267\Documents\Data\Demux\V1-V2"
 
 
 ```
+
+
+## Plot Top Bar
+```{r Plot top bar}
+plot.top.bar <- function(phyloseq, taxa.level, n=10, pheno.group, group.by.pheno=NULL, 
+                         path=NULL, phyloseq.name, group.title, top=NA, return.frame=FALSE, colors=NA){
+  if(is.na(colors)){
+    colors <- color.list(n+1)
+  } 
+  
+
+  if(pheno.group=="family"){
+    families <- identify.families(phyloseq)
+  }
+  
+  plot.bar <- data.frame(suppressWarnings(plot.table.prep(phyloseq, taxa.level, n, pheno.group, group.by.pheno, top)))
+  
+  print(plot.bar)
+  
+  if(phyloseq.name=="family.phyloseq"){
+    if(length(uuln(sample.to.data.frame(family.phyloseq.genus)[,"type"]))==7){
+      plot.bar[, "type"] <- factor(plot.bar[, "type"], levels=c("BNA", "BSA", "BST", "MNA", "MSA", "MBM", "MAS"))
+    }
+  }else if(phyloseq.name=="Control"){
+    plot.bar[, "samID"] <- factor(plot.bar[, "samID"], levels=c("02WCNT_I", "09WCNT_I", "14WCNT_I", "08WBNA_I", 
+                                                                "06WBNA_I", "44WBNA_I", "35WBNA_I", "02WBNA_I", 
+                                                                "39WBNA_I", "34WBNA_I", "21WBNA_I", "31WBNA_I", "43WBNA_I"))
+  }
+  
+  print(plot.bar)
+  
+  if.asv <- if.asv(taxa.level)
+  taxa.level <- if.asv[1]
+  asv <- if.asv[2]
+  
+  #   FileName <- paste(paste0(path, "/table"), phyloseq.name, tolower(taxa.level), "top", n, tolower(pheno.group), sep=".")
+  # if(!is.null(group.by.pheno)){
+  #   FileName <- paste(FileName, group.by.pheno, sep=".")
+  # }
+  # FileName <- paste(FileName, "png", sep=".")
+  # kbl.tbl <- plot.bar
+  # kbl.tbl <- kbl.tbl[order(kbl.tbl[, 2]), ]
+  # kibble <- kbl.tbl[, c(1, 3)] %>%
+  #   kbl(centering=TRUE, escape=FALSE, col.names=c("Species", "Relative Abundance"), align="c") %>%
+  #   kable_styling(font_size=15) %>%
+  #   kable_classic("striped", full_width=F, html_font="Calibri", position="center") %>%
+  #   row_spec(0, bold=TRUE) 
+  # if(length(uln(unique(kbl.tbl[, pheno.group])))>1){
+  #   kibble <- kibble %>%
+  #     pack_rows(index=table(kbl.tbl[, pheno.group]), bold=FALSE, label_row_css="border-bottom: 0px solid;") 
+  # }
+  # kibble %>%
+  #   save_kable(file=FileName, zoom=3)
+  
+  # print(data.frame(sample_data(phyloseq))[, "birth_type"])
+
+  # plot.bar.title <- paste(group.title, str_to_title(pheno.group), "Top", n, "Bar Plot for", group.by.pheno)
+  plot.bar.title <- paste(group.title, "\nTop", n, "Bar Plot")
+  bar.plot <- ggplot(plot.bar, aes(fill=get(taxa.level), y=Abundance, x=get(pheno.group))) +
+                theme_classic() +
+                geom_bar(position="stack", color="black", stat="identity") +
+                # theme(text=element_text(size=30), axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+                # xlab(str_to_title(pheno.group))+
+                # xlab("Infant ID")+
+                ylab("Relative Abundance")+
+                guides(fill=guide_legend(title=taxa.level, ncol=2)) #+
+                # theme(axis.title.x=element_blank(), axis.line.x.bottom=element_blank(), 
+                #       axis.text.x=element_text(color="black", vjust=+8), 
+                #       axis.ticks.x=element_blank(), axis.line.y.left=element_blank())
+  
+  if(str_detect(pheno.group, "_")==FALSE){
+      bar.plot <- bar.plot + xlab(str_to_title(pheno.group))
+  }else{
+    bar.plot <- bar.plot + xlab(str_to_title(str_replace(pheno.group, "_", " ")))
+  }
+  
+  if(pheno.group=="family"){
+    if(n==20){
+      bar.plot <- bar.plot +
+        scale_x_discrete(limits=families, expand=c(0.5, 0)) +
+        # scale_x_discrete(limits=families, guide=guide_axis(n.dodge=2)) +
+        scale_fill_manual(values=colors) +
+        # guides(fill=guide_legend(byrow=FALSE)) +
+        coord_cartesian(ylim=c(0, 1), expand=0) 
+    }else{
+      bar.plot <- bar.plot +
+        scale_x_discrete(limits=families, expand=c(0.5, 0)) +
+        scale_fill_manual(values=colors) +
+        coord_cartesian(ylim=c(0, 1), expand=0)
+    }
+  }else{
+    if(n==20){
+      bar.plot <- bar.plot +
+        scale_fill_manual(values=colors) +
+        scale_x_discrete(expand=c(0.5, 0)) +
+        # scale_x_discrete(expand=c(0.15, 0.15)) +
+        coord_cartesian(ylim=c(0, 1), expand=0)
+    }else{
+      bar.plot <- bar.plot +
+        scale_fill_manual(values=colors) +
+        # scale_x_discrete(expand=c(0, 0)) +
+        scale_x_discrete(expand=c(0.5, 0)) +
+        coord_cartesian(ylim=c(0, 1), expand=0)
+    }
+  }
+  
+  if(asv==TRUE){
+    taxa.level <- "ASV"
+  }
+  
+  if(is.null(path)){
+    return(bar.plot)
+    # if(return.frame==FALSE){
+    #   return(bar.plot)
+    # }else if(return.frame==TRUE){
+    #   return(list(plot.bar, bar.plot))
+    # }
+  }
+  
+  
+  if (!is.null(path)){
+    if(n!=0){
+      FileName <- paste0(path, "/barplot.", phyloseq.name, ".", tolower(taxa.level), ".top.", n, ".", tolower(pheno.group))
+    }else{
+      FileName <- paste0(path, "/barplot.", phyloseq.name, ".", tolower(taxa.level), ".all.taxa.", tolower(pheno.group))
+    }
+  }else {
+    paste0("/barplot.", phyloseq.name, ".", tolower(taxa.level), ".top.", n, ".", tolower(pheno.group))
+  }
+  if(!is.null(group.by.pheno)){
+    FileName <- paste0(FileName, ".", group.by.pheno)
+  }
+  FileName <- paste0(FileName, ".png")
+  # width <- 10
+  if(group.title=="Family Sequencing Infant Nasal"){
+    width <- 10
+  }else{
+    width <- 8
+  }
+  if(taxa.level=="Species"||taxa.level=="ASV"){
+    width <- width+3
+  }
+  if(pheno.group=="family"){
+    # width <- width+(0.3*length(families))
+    width <- width+(0.15*length(families))
+  }
+  if(pheno.group=="samID"){
+    width <- width+(0.3*length(uuln(sample_data(phyloseq)[, pheno.group])))
+  }
+  if(pheno.group=="type"){
+    # width <- width+(0.3*length(uuln(sample_data(phyloseq)[, pheno.group])))
+    width <- width-3
+  }else{
+    width <- width+(0.3*length(uuln(sample_data(phyloseq)[, pheno.group])))
+  }
+
+  # print(data.frame(sample_data(phyloseq)) %>% dplyr::group_by_(pheno.group) %>% dplyr::summarise(number=n()))
+  # print(data.frame(sample_data(phyloseq)) %>% group_by_(pheno.group) %>% dplyr::count())
+  
+  # print(table(data.frame(sample_data(phyloseq))[, pheno.group]))
+  # cat(paste0("\n  ", table(data.frame(sample_data(phyloseq))[, pheno.group])))
+  
+  if(pheno.group=="Sample"){
+    width <- width+3
+    bar.plot <- bar.plot + theme(#axis.title.x=element_blank(), 
+                                 axis.line.x.bottom=element_blank(), 
+                      axis.text.x=element_text(#angle=45, 
+                                               color="black", vjust=3), #, hjust=1.5
+                      axis.line.y.left=element_blank(), axis.ticks.length=unit(0, "cm"))
+  }else if(pheno.group=="family"){
+    # bar.plot <- bar.plot + theme(#axis.title.x=element_blank(), 
+    #                              axis.line.x.bottom=element_blank(), 
+    #                   axis.text.x=element_text(angle=45, hjust=1, color="black"), #, vjust=3), #hjust=-0.5, 
+    #                   axis.ticks.x=element_blank(), axis.line.y.left=element_blank())#, axis.ticks.length=unit(0, "cm"))
+    bar.plot <- bar.plot + theme(axis.line.x.bottom=element_blank(), axis.line.y.left=element_blank(), 
+          axis.text.x=element_text(color="black", angle=45, hjust=1), axis.ticks.x=element_blank(), axis.ticks.y=element_blank(), 
+          panel.border=element_rect(color="black", fill=NA, size=0.75), strip.placement="bottom", 
+          strip.background=element_rect(linetype="dashed", fill=NA, size=0.5), #panel.spacing.x=unit(0, "line"), 
+          legend.title.align=0.5, legend.spacing.x=unit(8, "pt"), legend.box.spacing=unit(0, "pt"), 
+          panel.grid.major=element_line(linetype="dashed", color="gray95"))
+  }else if(pheno.group=="type"){
+    width <- width+3
+    bar.plot <- bar.plot + theme(#axis.title.x=element_blank(), 
+                                 axis.line.x.bottom=element_blank(), 
+                      axis.text.x=element_text(#angle=45, 
+                                               color="black", vjust=3), #, hjust=1.5
+                      axis.line.y.left=element_blank(), axis.ticks.length=unit(0, "cm"))
+  }else{
+    bar.plot <- bar.plot + theme(#axis.title.x=element_blank(), 
+                                 axis.line.x.bottom=element_blank(), 
+                      axis.text.x=element_text(color="black", 
+                                               angle=45, hjust=1, vjust=1.1
+                                               # vjust=3, 
+                                               ), #, hjust=1), #vjust=3), #hjust=-0.5, 
+                      axis.ticks.x=element_blank(), axis.line.y.left=element_blank(), axis.ticks.length=unit(0, "cm")) #+
+      # geom_label(inherit.aes=FALSE, data=data.frame(sample_data(phyloseq)) %>% group_by(get(pheno.group)) %>% dplyr::count(), 
+      #       aes(label=paste0("n=", n), x=pheno.group), y=0.9)
+      # stat_summary(size=2, fun.data=n_fun, geom="text", data=data.frame(sample_data(phyloseq))[, "birth_type"])
+  }
+  
+  # bar.plot <- bar.plot + theme(axis.title.x=element_blank(), axis.line.x.bottom=element_blank(),
+  #                              axis.line.y.left=element_blank(), axis.ticks.length=unit(0, "cm"), 
+  #                              plot.background=element_rect(fill="white", color="white"),
+  #                              legend.background=element_blank(), panel.background=element_rect(fill="white", color="white"),
+  #                              legend.spacing.x=unit(10, "pt"), 
+  #                              plot.title=element_blank(), axis.text.x=element_blank(), legend.box.margin=margin(0,10,0,0)) 
+  
+  bar.plot <- annotate_figure(bar.plot, top=text_grob(label=plot.bar.title)) +
+    bgcolor("white") + border(color="white")
+  # ggsave(bar.plot, file=FileName, type="cairo", width=width, height=6, scaling=1.5, limitsize=FALSE)
+  # ggsave(bar.plot, file=FileName, type="cairo", width=width, height=6, scale=0.75, limitsize=FALSE)
+  
+  
+  ggsave(bar.plot, file=FileName, type="cairo", width=width, height=(1.325 + 2.5), scale=0.75, limitsize=FALSE)
+  # ggsave(bar.plot, file=FileName, type="cairo", width=width, height=(1.325 + 2.5 + 4), scale=0.75, limitsize=FALSE)
+}
+```
