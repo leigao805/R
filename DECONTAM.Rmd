@@ -1,0 +1,35 @@
+---
+title: "Decontam"
+author: "Ziyun Meng"
+date: "2023-12-20"
+output: html_document
+---
+
+# Decontam S2
+
+```{r Decontam S2}
+#对noncontam进行备份，准备进行decontam
+ physeq_contam <- physeq1.noncontam
+#获取所有CNT的行名
+rowname_CNT <- rownames(sample_data(physeq_contam))[which(as.data.frame(sample_data(physeq_contam))[, "type"]=="CNT")]
+#提取phyloseq对象中CNT的信息
+  physeq_contam <- prune_samples(rowname_CNT, physeq_contam)
+#筛选出在所有CNT中出现了（50%-1）的ASV
+  physeq_contam <- prune_taxa(colSums(data.frame(otu_table(physeq_contam))!=0)>=((nrow(data.frame(otu_table(physeq_contam)))/2)-1), physeq_contam)
+#计算出所有ASV出现频率的总和，筛选出丰度大于25个ASV的CNT
+  physeq_contam <- prune_taxa(taxa_sums(physeq_contam)>25, physeq_contam)
+#获取physeq_contam的taxa_names
+  asv.prune <- taxa_names(physeq_contam)
+  #获取physeq1.noncontam(完成decontam s1后)中所有的ASV name
+  allTaxa <- taxa_names(physeq1.noncontam)
+  
+#FOR循环：去除污染物
+  #获取asv.prune的长度(总计有多少个ASV)
+  for(a in 1:length(asv.prune)){
+  #①查看allTaxa是否属于污染物，将不是污染物的保留下来，②从physeq1.noncontam筛选出remainTaxa的信息
+    physeq1.noncontam <- prune_taxa(allTaxa[!(allTaxa %in% asv.prune[a])], physeq1.noncontam)
+  }
+#完成decontam s2后赋值给physeq1
+  physeq1 <- physeq1.noncontam
+
+```

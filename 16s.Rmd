@@ -1,0 +1,1032 @@
+---
+title: "DADA2"
+output: html_document
+date: "2023-11-08"
+---
+
+```{r Inspect read quality profiles;Filter and trim;Learn the Error Rates;Sample Inference}
+library(dada2); packageVersion("dada2")
+setwd("C:/Users/74267/Documents/Data/Demux/V1-V2")
+path <- "C:/Users/74267/Documents/Data/Demux/V1-V2"
+list.files(path)
+
+fnFs <- sort(list.files(path, pattern="_F1_R1_001.fq.gz", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_F1_R2_001.fq.gz", full.names = TRUE))
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 2)
+plotQualityProfile(fnFs[1:2])
+plotQualityProfile(fnRs[1:2])
+
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(150,0),maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,compress=TRUE, multithread=FALSE) 
+head(out)
+
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+plotErrors(errF, nominalQ=TRUE)
+
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+dadaFs[[1]]
+```
+
+```{r Merge paired reads}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE,justConcatenate=TRUE)
+head(mergers[[1]])
+```
+
+```{r Construct sequence table}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+table(nchar(getSequences(seqtab)))
+```
+
+```{r Remove chimeras}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+sum(seqtab.nochim)/sum(seqtab)
+```
+
+```{r Track reads through the pipeline}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+track
+```
+
+```{r Assign taxonomy}
+taxa <- assignTaxonomy(seqtab.nochim, "C:/Users/74267/Documents/Data/Demux/silva_nr99_v138.1_wSpecies_train_set.fa.gz", multithread=TRUE)
+taxa.print <- taxa
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+```{r Handoff to phyloseq}
+library(phyloseq); packageVersion("phyloseq")
+library(Biostrings); packageVersion("Biostrings")
+library(ggplot2); packageVersion("ggplot2")
+theme_set(theme_bw())
+```
+```{r REASSIGN}
+form.reassign <- function(data.frame){
+  for(a in 1:nrow(data.frame)){
+    print(a)
+    if(data.frame[a, "form"]=="I"){
+      data.frame[a, "form"] <- "Initial"
+    }else if(data.frame[a, "form"]=="F1"||data.frame[a, "form"]=="F"){
+      data.frame[a, "form"] <- "Follow up 1"
+    }else if(data.frame[a, "form"]=="F2"){
+      data.frame[a, "form"] <- "Follow up 2"
+    }else if(data.frame[a, "form"]=="F3"){
+      data.frame[a, "form"] <- "Follow up 3"
+    }else if(data.frame[a, "form"]=="F4"){
+      data.frame[a, "form"] <- "Follow up 4"
+    }
+  }
+  return(data.frame)
+}
+```
+
+```{r Handoff to phyloseq}
+  samdf.names <- function(fname) strsplit(fname, "_")[[1]][1]
+  samdf.form <- function(fname) strsplit(fname, "_")[[1]][2]
+  samdf=data.frame(samID=rownames(seqtab.nochim), 
+                   family=as.numeric(gsub('[a-z]*', "", gsub('[A-Z]*', "", sapply(row.names(seqtab.nochim), samdf.names)))), 
+                   type=substring(gsub('[0-9]*', "", sapply(row.names(seqtab.nochim), samdf.names)), 2), 
+                   region=substring(gsub('[0-9]*', "", sapply(row.names(seqtab.nochim), samdf.names)), 1, 1), 
+                   form=sapply(row.names(seqtab.nochim), samdf.form), 
+                   reads=as.numeric(rowSums(seqtab.nochim)))
+  # print(samdf)
+  rownames(samdf) <- samdf$samID
+  samdf[,"form"] <- "F1"
+  samdf <- form.reassign(samdf)
+
+  if("HO" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="HO"), "type"] <- "H2O"
+    samdf[which(samdf[, "type"]=="H2O"), "family"] <- 0
+  }
+  if("pos" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="pos"), "type"] <- "POS"
+  }
+  if("Pos" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="Pos"), "type"] <- "POS"
+  }
+  if("POS" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="POS"), "family"] <- 0
+  }
+  
+  if("cnt" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="cnt"), "type"] <- "CNT"
+  }
+  if("Cnt" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="Cnt"), "type"] <- "CNT"
+  }
+  if("CNT" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="CNT"), "family"] <- 0
+  }
+  
+  if("neg" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="neg"), "type"] <- "NEG"
+  }
+  if("Neg" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="Neg"), "type"] <- "NEG"
+  }
+  if("NEG" %in% samdf[, "type"]==TRUE){
+    samdf[which(samdf[, "type"]=="NEG"), "family"] <- 0
+  }
+  
+  
+  otumat <- otu_table(seqtab.nochim, taxa_are_rows=FALSE)
+  taxmat <- tax_table(taxa)
+  metadata <- sample_data(samdf)
+  physeq1.bak <- phyloseq(otumat, metadata, taxmat)
+  physeq1 <- phyloseq(otumat, metadata, taxmat)
+  
+  #saveRDS(phyloseq, paste0(path, "/phyloseq.rds"))
+  
+  #sample_data(physeq1)
+  dna <- Biostrings::DNAStringSet(taxa_names(physeq1))
+  names(dna) <- taxa_names(physeq1)                           #physeq1对象taxa_names赋值给names(dna)
+  physeq1 <- merge_phyloseq(physeq1, dna)
+  taxa_names(physeq1) <- paste0("asv", seq(ntaxa(physeq1)))   #taxa_names被修改
+
+
+```
+
+
+```{r decomtan Cheryl}
+#decom package
+library(phyloseq); packageVersion("phyloseq")
+library(ggplot2); packageVersion("ggplot2")
+library(decontam); packageVersion("decontam")
+# ps <- readRDS(system.file("extdata", "MUClite.rds", package="decontam"))
+# ps
+# head(sample_data(ps))
+df <- as.data.frame(sample_data(physeq1)) # Put sample_data into a ggplot-friendly data.frame。sample_data赋值给df
+df$LibrarySize <- sample_sums(physeq1)
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df))
+ggplot(data=df, aes(x=Index, y=LibrarySize, color=type)) + geom_point()
+# contamdf.freq <- isContaminant(physeq1, method="frequency", conc="reads")
+# head(contamdf.freq)
+# table(contamdf.freq$contaminant)
+# head(which(contamdf.freq$contaminant))
+# plot_frequency(physeq1, taxa_names(physeq1)[c(1,3)], conc="quant_reading") +
+#  xlab("DNA Concentration (PicoGreen fluorescent intensity)")
+# set.seed(100)
+# plot_frequency(physeq1, taxa_names(physeq1)[sample(which(contamdf.freq$contaminant),3)], conc="quant_reading") +
+#    xlab("DNA Concentration (PicoGreen fluorescent intensity)")
+# physeq1
+# physeq1.noncontam <- prune_taxa(!contamdf.freq$contaminant, physeq1)
+# physeq1.noncontam
+sample_data(physeq1)$is.neg <- sample_data(physeq1)$type == "CNT"
+contamdf.prev <- isContaminant(physeq1, method="prevalence", neg="is.neg")
+table(contamdf.prev$contaminant)
+head(which(contamdf.prev$contaminant))
+contamdf.prev05 <- isContaminant(physeq1, method="prevalence", neg="is.neg", threshold=0.1) #无效。threshold缺省，默认值即为0.1。
+table(contamdf.prev05$contaminant)
+# Make phyloseq object of presence-absence in negative controls and true samples
+physeq1.pa <- transform_sample_counts(physeq1, function(abund) 1*(abund>0))
+physeq1.pa.neg <- prune_samples(sample_data(physeq1.pa)$type == "CNT", physeq1.pa)
+physeq1.pa.pos <- prune_samples(sample_data(physeq1.pa)$type != "CNT", physeq1.pa)
+# Make data.frame of prevalence in positive and negative samples
+df.pa <- data.frame(pa.pos=taxa_sums(physeq1.pa.pos), pa.neg=taxa_sums(physeq1.pa.neg),
+                      contaminant=contamdf.prev$contaminant)
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+# revise1205: 替换freq-prev；下一个decontam里应该用physeq1.noncontam
+physeq1.noncontam <- prune_taxa(!contamdf.prev$contaminant, physeq1)
+physeq1.noncontam_bak <- prune_taxa(!contamdf.prev$contaminant, physeq1)
+
+# 导出excel
+library(openxlsx)
+
+# 提取OTU数据并转换为数据框
+otu_df <- as.data.frame(otu_table(physeq1.pa.neg))
+
+# 识别并删除全为0的列
+#otu_df <- otu_df[, colSums(otu_df != 0) > 0]
+filtered_df <- otu_df[, colSums(otu_df) >= 1/2*nrow(otu_df)-1]
+
+# 导出处理后的数据
+#write.csv(otu_df, "otu_table_filtered.csv", row.names = TRUE)
+write.csv(filtered_df, "otu_table_filtered_v2.csv", row.names = TRUE)
+
+
+```
+# Decontam S2
+
+```{r Decontam S2}
+#对noncontam进行备份，准备进行decontam
+ physeq_contam <- physeq1.noncontam
+#获取所有CNT的行名
+rowname_CNT <- rownames(sample_data(physeq_contam))[which(as.data.frame(sample_data(physeq_contam))[, "type"]=="CNT")]
+#提取phyloseq对象中CNT的信息
+  physeq_contam <- prune_samples(rowname_CNT, physeq_contam)
+#筛选出在所有CNT中出现了（50%-1）的ASV
+  physeq_contam <- prune_taxa(colSums(data.frame(otu_table(physeq_contam))!=0)>=((nrow(data.frame(otu_table(physeq_contam)))/2)-1), physeq_contam)
+#计算出所有ASV出现频率的总和，筛选出丰度大于25个ASV的CNT
+  physeq_contam <- prune_taxa(taxa_sums(physeq_contam)>25, physeq_contam)
+#获取physeq_contam的taxa_names
+  asv.prune <- taxa_names(physeq_contam)
+  
+#FOR循环：去除污染物
+  #获取asv.prune的长度(总计有多少个ASV)
+  for(a in 1:length(asv.prune)){
+  #获取physeq1.noncontam(完成decontam s1后)中所有的ASV name
+    allTaxa <- taxa_names(physeq1.noncontam)
+  #查看allTaxa是否属于污染物，将不是污染物的保留下来
+    remainTaxa <- allTaxa[!(allTaxa %in% asv.prune[a])]
+  #从physeq1.noncontam筛选出remainTaxa的信息
+    physeq1.noncontam <- prune_taxa(remainTaxa, physeq1.noncontam)
+  }
+#完成decontam s2后赋值给physeq1
+  physeq1 <- physeq1.noncontam
+  
+  saveRDS(physeq1, paste0(path, "/phyloseq.rds"))
+```
+
+```{r Remove specific taxa}
+remove.specific.taxa <- function(phyloseq, remove.asv){
+  allTaxa <- taxa_names(phyloseq)
+  removeTaxa <- allTaxa[!(allTaxa %in% remove.asv)]
+  phyloseq <- prune_taxa(removeTaxa, phyloseq)
+  return(phyloseq)
+}
+```
+
+```{r}
+
+  # physeq1 <- prune_samples(row.names(as.data.frame(sample_data(physeq1)))[which(as.data.frame(sample_data(physeq1))[, "type"]=="CNT")], physeq1)
+  # physeq1 <- prune_taxa(colSums(data.frame(otu_table(physeq1))!=0)>=((nrow(data.frame(otu_table(physeq1)))/2)-1), physeq1)
+  # physeq1 <- prune_taxa(taxa_sums(physeq1)>25, physeq1)
+  # contam.names <- names(sort(taxa_sums(physeq1)[taxa_sums(physeq1)>0], decreasing=TRUE))
+  # physeq1.table <- cbind(as.data.frame(tax_table(physeq1)), t(as.data.frame(otu_table(physeq1))))
+  # if(ncol(physeq1.table)==8){
+  #   physeq1.table[, "Sum"] <- physeq1.table[, c(8)]
+  # }else{
+  #   physeq1.table[, "Sum"] <- rowSums(physeq1.table[, c(8:(ncol(physeq1.table)))])
+  # }
+  # physeq1.table[, "ASV"] <- rownames(physeq1.table)
+  # physeq1.table <- physeq1.table[, c(ncol(physeq1.table), 1:(ncol(physeq1.table)-1))]
+  # asv.prune <- rownames(physeq1.table)
+  
+# revise1205:change physeq1-physeq1.noncontam —— reject
+# 2023年12月20日 commit: add physeq_contam <- physeq1.noncontam; change physeq1.noncontam to physeq_contam
+  physeq_contam <- physeq1.noncontam
+  physeq_contam <- prune_samples(row.names(as.data.frame(sample_data(physeq_contam)))[which(as.data.frame(sample_data(physeq_contam))[, "type"]=="CNT")], physeq_contam)
+  physeq_contam <- prune_taxa(colSums(data.frame(otu_table(physeq_contam))!=0)>=((nrow(data.frame(otu_table(physeq_contam)))/2)-1), physeq_contam)
+  physeq_contam <- prune_taxa(taxa_sums(physeq_contam)>25, physeq_contam)
+  contam.names <- names(sort(taxa_sums(physeq_contam)[taxa_sums(physeq_contam)>0], decreasing=TRUE))
+  ps.table <- cbind(as.data.frame(tax_table(physeq_contam)), t(as.data.frame(otu_table(physeq_contam))))
+ if(ncol(ps.table)==8){
+    ps.table[, "Sum"] <- ps.table[, c(8)]
+ }else{
+    ps.table[, "Sum"] <- rowSums(ps.table[, c(8:(ncol(ps.table)))])
+  }
+  ps.table[, "ASV"] <- rownames(ps.table)
+  ps.table <- ps.table[, c(ncol(ps.table), 1:(ncol(ps.table)-1))]
+   asv.prune <- rownames(ps.table)
+  asv.prune <- contam.names
+
+  for(a in 1:length(asv.prune)){
+
+    # physeq1 <- remove.specific.taxa(physeq1, asv.prune[a])
+
+    physeq1.noncontam <- remove.specific.taxa(physeq1.noncontam, asv.prune[a])
+
+  }
+
+  physeq1 <- physeq1.noncontam
+  
+  
+
+```
+
+## Sequencing Contaminants
+
+```{r Contaminants}
+identify.contaminants <- function(group.id, phyloseq.path, data.set.number){
+  phyloseq <- readRDS(paste0(phyloseq.path, "/phyloseq.", group.id, ".pre.processing.rds"))
+  phyloseq <- prune_samples(row.names(as.data.frame(sample_data(phyloseq)))[which(as.data.frame(sample_data(phyloseq))
+                                                                                  [, "Sample_or_Control"]=="Control Sample")], phyloseq)
+
+  
+  phyloseq <- prune_taxa(colSums(data.frame(otu_table(phyloseq))!=0)>=((nrow(data.frame(otu_table(phyloseq)))/2)-1)/data.set.number, phyloseq)
+  phyloseq <- prune_taxa(taxa_sums(phyloseq)>25, phyloseq)
+  contam.names <- names(sort(taxa_sums(phyloseq)[taxa_sums(phyloseq)>0], decreasing=TRUE))
+  ps.table <- cbind(as.data.frame(tax_table(phyloseq)), t(as.data.frame(otu_table(phyloseq))))
+  if(ncol(ps.table)==8){
+    ps.table[, "Sum"] <- ps.table[, c(8)]
+  }else{
+    ps.table[, "Sum"] <- rowSums(ps.table[, c(8:(ncol(ps.table)))])
+  }
+  
+  ps.table[, "ASV"] <- rownames(ps.table)
+  ps.table <- ps.table[, c(ncol(ps.table), 1:(ncol(ps.table)-1))]
+   print(ps.table)
+   View(ps.table)
+  # ps.table <- ps.table[, -c(1:5)]
+  # ps.table %>%
+  #   kbl(centering=TRUE, escape=FALSE, align="c") %>%
+  #       kable_styling(font_size=15) %>%
+  #       kable_classic("striped", full_width=F, html_font="Calibri", position="center") %>%
+  #       row_spec(0, bold=TRUE) %>%
+  #       save_kable(file=paste(paste0(phyloseq.path, "/table"), group.id, "contaminants", "png", sep="."), zoom=5)
+  write_csv(ps.table, paste(paste0(phyloseq.path, "/table"), group.id, "contaminants", "csv", sep="."))
+  # print(contam.names)
+  print(contam.names)
+  return(contam.names)
+}
+
+```
+
+# My Function
+
+```{r}
+my.function <- function(path, group.id, group.title, processing=FALSE, grouped=FALSE, plots=NULL, pheno=FALSE){
+  file.creation(path)
+  if(processing==TRUE){
+    if(grouped==FALSE){
+      decontam.preprocessing(group.id, Initial.path, Decontam.path)
+      # data.set.number <- as.numeric(readline(prompt="data.set.number: "))
+      asv.prune <- identify.contaminants(group.id, Decontam.path, 1)
+      decontam(group.id, asv.prune, 0.1, Initial.path, Decontam.path)
+      # decontam(group.id, NULL, 0.1, Initial.path, Decontam.path)
+      if(pheno==FALSE){
+        phyloseq.processing(group.id, Initial.path, Decontam.path, Phyloseq.path, NULL, FALSE, FALSE)
+      }else{
+        phyloseq.processing(group.id, Initial.path, Decontam.path, Phyloseq.path, Pheno.path, FALSE, FALSE)
+      }
+    }else{
+      if(group.title!="1-37"){
+        phyloseq.processing(group.id, Initial.path, Decontam.path, Phyloseq.path, Pheno.path, TRUE, FALSE)
+      }else{
+        phyloseq.processing(group.id, Initial.path, Decontam.path, Phyloseq.path, Pheno.path, TRUE, TRUE)
+      }
+    }
+  }
+
+  taxa.level <- c("ASV")
+  # taxa.level <- c("Genus")
+  # taxa.level <- c("Species")
+
+  for(j in 1:length(taxa.level)){
+    cat("\n", taxa.level[j])
+    assign(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j])), readRDS(paste0(Phyloseq.path, "/phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]), ".rds"))) #, envir=.GlobalEnv
+    assign(paste0("phyloseq.pruned.control.", group.id, ".", tolower(taxa.level[j])), readRDS(paste0(Phyloseq.path, "/phyloseq.pruned.control.", group.id, ".", tolower(taxa.level[j]), ".rds")))
+    assign(paste0("phyloseq.pruned.both.", group.id, ".", tolower(taxa.level[j])), readRDS(paste0(Phyloseq.path, "/phyloseq.pruned.both.", group.id, ".", tolower(taxa.level[j]), ".rds")))
+
+    sample.types <- unname(unlist(unique(as.data.frame(sample_data(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j])))))[, "type"])))
+
+    if(length(unname(unlist(unique(as.data.frame(sample_data(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j])))))[, "group"]))))==1){
+      if(unname(unlist(unique(as.data.frame(sample_data(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j])))))[, "group"])))=="mother"){
+        pheno.group.list <- c("day", "conditions", "medications", "antibiotics", "pets", "family", "race", "exposures")
+      }else if(unname(unlist(unique(as.data.frame(sample_data(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j])))))[, "group"])))=="baby"){
+        pheno.group.list <- c("time", "day", "birth_type", "sex", "conditions", "medications", "antibiotics", "pets", "family", "race", "exposures")
+      }
+    }else{
+      pheno.group.list <- c("type", "birth_type", "sex", "antibiotics", "pets", "family", "race", "grouping")
+    }
+
+    # pheno.counts(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), group.id, pheno.group.list[c(1:6, 8)], paste0("phyloseq.pruned.", group.id), Phyloseq.path)
+    # pheno.counts(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), group.id, pheno.group.list[1:2], paste0("phyloseq.pruned.", group.id), Phyloseq.path)
+    
+    if(taxa.level[j]=="Family"||taxa.level[j]=="Genus"||taxa.level[j]=="Species"){
+      if(plots=="bar"){ 
+        for(i in 1:length(pheno.group.list)){
+          cat("\n", pheno.group.list[i])
+          if(pheno.group.list[i]=="type"){
+            phyloseq.barplot(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], 20, pheno.group.list[i], "family", Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+          }else{
+            phyloseq.barplot(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], 20, pheno.group.list[i], NULL, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+            # plot.top.pie(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], 5, pheno.group.list[i], NULL, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+          }
+        }
+      }
+    }
+    
+    
+    # if(taxa.level[j]=="Genus"||taxa.level[j]=="Species"){
+    if(taxa.level[j]=="Species"){
+      if(plots=="correlation"){
+        # phyloseq.taxa(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], 0, "type", sample.types[1], sample.types[2:length(sample.types)], Comparisons.path, 
+        # paste0("phyloseq.pruned.", group.id))
+        family.comparison.processing(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], sample.types[1], sample.types[2:length(sample.types)], 0, Correlation.path, paste0("phyloseq.pruned.", group.id))
+      }
+      if(plots=="bar"){
+        phyloseq.barplot(get(paste0("phyloseq.pruned.control.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], 20, "Sample", "group", 
+                         Taxa.path, paste0("phyloseq.pruned.control.", group.id), group.title)
+      }
+    }
+
+    if(taxa.level[j]=="Genus"||taxa.level[j]=="Species"||taxa.level[j]=="ASV"){
+      # top.genus(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), c("Streptococcus", "Staphylococcus", "Corynebacterium", "Pseudomonas", "Veillonella"), Taxa.path, paste0("phyloseq.pruned.", group.id))
+      if(plots=="diversity"){
+        # pheno.group.list <- "birth_type"
+        for(i in 1:length(pheno.group.list)){
+          if(pheno.group.list[i]!="family"){
+            # richness.alpha(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], pheno.group.list[i], path, paste0("phyloseq.pruned.", group.id), reads=TRUE)
+            richness.alpha(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], pheno.group.list[i], path, paste0("phyloseq.pruned.", group.id), reads=FALSE)
+            plotBeta(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], pheno.group.list[i], path, paste0("phyloseq.pruned.", group.id), TRUE, TRUE, grouped.title)
+          }
+        }
+      }
+
+      # if(plots=="bar"){
+      #   phyloseq.barplot(get(paste0("phyloseq.pruned.control.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], 20, "Sample", "group", 
+      #                    Taxa.path, paste0("phyloseq.pruned.control.", group.id), group.title)
+      # }
+
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "epidermidis", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "mitis", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "salivarius", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "parainfluenzae", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "johnsonii", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "aureus", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "Bergeyella Unclassified Species asv8", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "tuberculostearicum", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "parvum", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "acnes", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "aeruginosa", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+
+    }else if(taxa.level[j]=="Genus"){
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "Staphylococcus", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "Pseudomonas", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "Corynebacterium", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "Bergeyella", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+      # species.correlation(get(paste0("phyloseq.pruned.", group.id, ".", tolower(taxa.level[j]))), taxa.level[j], n=0, "Streptococcus", "grouping", "BNA.1-50", "MNA.1-50", FALSE, Taxa.path, paste0("phyloseq.pruned.", group.id), group.title)
+    }
+  }
+}
+```
+
+```{r Alpha Diversity}
+library("phyloseq")
+library("ggplot2")
+library("dplyr")
+library("ggpubr")
+head(otumat)[,1:6]
+head(taxmat)
+head(metadata)
+
+# 提取不重复的 Genus 列信息
+# taxmat <- unique(tax_table(taxmat)[, "Genus"])
+
+
+#rownames(taxmat) <- as.character(tax_table(taxmat)[, "Genus"])
+#taxmat =  as.matrix(taxmat)
+
+#OTU = otu_table(otumat, taxa_are_rows = FALSE)
+#TAX = tax_table(taxmat)
+#sampledata = sample_data(metadata)
+
+#physeq1 = phyloseq(OTU, TAX, sampledata)
+#physeq1.sub <- subset.object(physeq1,c("BNA","BSA","BST","CNT"),"type")
+#relab_genera = transform_sample_counts(physeq1.sub, function(x) x / sum(x) * 100) 
+physeq1
+sample_data(physeq1)$type <-factor((sample_data(physeq1)$type),levels=c("BNA","BSA","BST","CNT","MBM","MNA","MSA", "MAS"))
+richness <- estimate_richness(physeq1)
+head(richness)
+plot_richness(physeq1)
+plot_richness(physeq1, x="type", measures="Shannon", color = "type")+
+  geom_boxplot(alpha=0.6)+ 
+  theme(legend.position="none", axis.text.x=element_text(angle=45,hjust=1,vjust=1,size=12))
+```
+
+#Comparisons Cheryl
+
+```{r}
+# comb.list <- uln(unique(as.data.frame(sample_data(physeq1))[, "type"]))
+# comparisons <- as.list(as.data.frame(t(CombPairs(comb.list))))
+# a_my_comparisons <- list( c("BNA", "BSA"), c("BST", "CNT"), c("MBM", "MSA"))
+# symnum.args = list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), symbols = c("****", "***", "**", "*", "ns"))
+# 
+# plot_richness(physeq1, x="type", measures="Shannon", color = "type")+
+#   geom_boxplot(alpha=0.6)+ 
+#   theme(legend.position="none", axis.text.x=element_text(angle=45,hjust=1,vjust=1,size=12))+
+#   stat_compare_means(method = "wilcox.test", comparisons = a_my_comparisons, label = "p.signif", symnum.args = symnum.args)
+```
+
+
+## Subset Object *************
+
+```{r Subset Object}
+subset.object <- function(object, pheno, col.name=NULL, remove=FALSE){
+        # cat("\n  ", paste("Subset sample data by", pheno))
+  if(class(object)=="phyloseq"){
+      if(length(pheno)==1){
+      samdf <- data.frame(sample_data(object))
+      if(is.null(col.name)){
+        if(remove==FALSE){
+          for(a in 1:ncol(samdf)){
+            if(pheno %in% samdf[, a]){
+              sample_data(object) <- sample_data(object)[c(which(sample_data(object)[, a]==c(pheno))), ]
+            }
+          }
+        }else if(remove==TRUE){
+          for(a in 1:ncol(samdf)){
+            if(pheno %in% samdf[, a]){
+              sample_data(object) <- sample_data(object)[c(which(sample_data(object)[, a]!=c(pheno))), ]
+            }
+          }
+        }
+      }else{
+        if(remove==FALSE){
+          sample_data(object) <- sample_data(object)[c(which(sample_data(object)[, col.name]==c(pheno))), ]
+        }else if(remove==TRUE){
+          sample_data(object) <- sample_data(object)[c(which(sample_data(object)[, col.name]!=c(pheno))), ]
+        }
+      }
+      if(length(which(taxa_sums(object)!=0))!=0){
+        object <- prune_taxa(taxa_sums(object)!=0, object)
+      }
+    }else{
+      phyloseq.list <- list()
+      object.sub <- object
+      for(a in 1:length(pheno)){
+        samdf <- data.frame(sample_data(object))
+        if(is.null(col.name)){
+          if(remove==FALSE){
+            object.sub <- object
+            for(b in 1:ncol(samdf)){
+              if(pheno[a] %in% samdf[, b]){
+                sample_data(object.sub) <- sample_data(object)[c(which(sample_data(object)[, b]==c(pheno[a]))), ]
+              }
+            }
+          }else if(remove==TRUE){
+            for(a in 1:ncol(samdf)){
+              if(pheno[a] %in% samdf[, b]){
+                sample_data(object.sub) <- sample_data(object)[c(which(sample_data(object)[, b]!=c(pheno[a]))), ]
+              }
+            }
+          }
+        }else{
+          if(remove==FALSE){
+            if(pheno[a] %in% samdf[, col.name]){
+              if(exists("check.for.exist")==FALSE){
+                check.for.exist <- a
+              }
+              object.sub <- object
+              sample_data(object.sub) <- sample_data(object)[c(which(sample_data(object)[, col.name]==c(pheno[a]))), ]
+            }
+          }else if(remove==TRUE){
+            sample_data(object.sub) <- sample_data(object)[c(which(sample_data(object)[, col.name]!=c(pheno[a]))), ]
+          }
+        }
+        if(remove==FALSE){
+          if(length(which(taxa_sums(object.sub)!=0))!=0){
+            phyloseq.list[[a]] <- prune_taxa(taxa_sums(object.sub)!=0, object.sub)
+          }else{
+            phyloseq.list[[a]] <- object.sub
+          }
+          if(exists("check.for.exist")==TRUE){
+              if(a!=check.for.exist){
+              phyloseq.list[[check.for.exist]] <- merge_phyloseq(phyloseq.list[[check.for.exist]], phyloseq.list[[a]])
+            }
+          }
+        }
+      }
+      if(remove==FALSE){
+        if(exists("check.for.exist")==TRUE){
+          object <- phyloseq.list[[check.for.exist]]
+          if(length(which(taxa_sums(object)!=0))!=0){
+            object <- prune_taxa(taxa_sums(object)!=0, object)
+          }
+        }
+      }else if(remove==TRUE){
+        object <- object.sub
+        if(length(which(taxa_sums(object)!=0))!=0){
+          object <- prune_taxa(taxa_sums(object)!=0, object)
+        }
+      }
+    }
+  }else if(class(object)=="data.frame"){
+    object.og <- object
+    if(is.null(col.name)){
+      if(remove==FALSE){
+        if(length(pheno)>1){
+          for(a in 1:length(pheno)){
+            for(b in 1:ncol(object)){
+              if(pheno %in% object[, b]){
+                merge.object <- object.og[c(which(object.og[, b]==c(pheno[a]))), ]
+              }
+            }
+            if(a==1){
+              object <- merge.object
+            }else{
+              object <- rbind(object, merge.object)
+            }
+          }
+        }else{
+          for(a in 1:ncol(object)){
+            if(pheno %in% object[, a]){
+              object <- object[c(which(object[, a]==c(pheno))), ]
+            }
+          }
+        }
+      }else if(remove==TRUE){
+        for(a in 1:ncol(object)){
+          if(pheno %in% object[, a]){
+            object <- object[c(which(object[, a]!=c(pheno))), ]
+          }
+        }
+      }
+    }else{
+      if(remove==FALSE){
+        if(length(pheno)>1){
+          for(a in 1:length(pheno)){
+            merge.object <- object.og[c(which(object.og[, col.name]==c(pheno[a]))), ]
+            if(a==1){
+              object <- merge.object
+            }else{
+              object <- rbind(object, merge.object)
+            }
+          }
+        }else{
+          object <- object[c(which(object[, col.name]==c(pheno))), ]
+        }
+      }else if(remove==TRUE){
+        if(length(pheno)>1){
+          for(a in 1:length(pheno)){
+            object <- object[c(which(object[, col.name]!=c(pheno[a]))), ]
+          }
+        }else{
+          object <- object[c(which(object[, col.name]!=c(pheno))), ]
+        }
+      }
+    }
+  }
+  
+  return(object)
+}
+```
+
+```{r Beta Diversity-package}
+library("phyloseq")
+library("ggplot2")
+library("dplyr")
+# install.packages("ggpubr")
+library("ggpubr")
+library("Matrix")
+library("reshape2")
+library("vegan")
+physeq1
+#beta subset
+physeq1.sub <- subset.object(physeq1,c("BNA","BST","BSA"),"type")
+relab_genera = transform_sample_counts(physeq1.sub, function(x) x / sum(x) * 100) 
+#relab_genera = transform_sample_counts(physeq1, function(x) x / sum(x) * 100) 
+
+head(otu_table(relab_genera)[,1:6])
+
+abrel_bray <- phyloseq::distance(relab_genera, method = "bray")
+abrel_bray <- as.matrix(abrel_bray)
+head(abrel_bray)[,1:6]
+
+sub_dist <- list()
+groups_all <- sample_data(relab_genera)$type
+
+for (group in levels(groups_all)) { 
+    row_group <- which(groups_all == group)
+    sample_group <- sample_names(relab_genera)[row_group]
+    sub_dist[[group]] <- abrel_bray[ sample_group, sample_group]
+    sub_dist[[group]][!lower.tri(sub_dist[[group]])] <- NA
+}
+
+braygroups<- melt(sub_dist)
+df.bray <- braygroups[complete.cases(braygroups), ]
+df.bray$L1 <- factor(df.bray$L1, levels=names(sub_dist))
+
+head(df.bray)
+
+ggplot(df.bray, aes(x=L1, y=value, colour=L1)) +
+    geom_jitter() + 
+  geom_boxplot(alpha=0.6) +  
+  theme(legend.position="none") +
+  ylab("Bray-Curtis diversity") +
+  theme(axis.title.x=element_blank(), axis.text.x=element_text(angle=45,hjust=1,vjust=1,size=12), axis.text.y=element_text(size=12))
+
+ord = ordinate(relab_genera, method="PCoA", distance = "bray")
+
+plot_ordination(relab_genera, ord, color = "type", shape="Test") + 
+  geom_point(size=4) + 
+  stat_ellipse(aes(group=type))             # Error：Shape variable was not found in the available data. No shape mapped.
+
+# 2023年12月2日 commit
+# library(ggplot2)
+# 
+# ggplot(relab_genera, aes(color = type, shape = Test)) 
+#   geom_point(size=4) 
+#   stat_ellipse(aes(group = type))
+#   facet_wrap(~ type)
+
+#samples <- data.frame(sample_data(relab_genera))
+#adonis(abrel_bray ~ Test, data = samples)   # Error：Can't find the object 'Test'.
+
+```
+```{r decontam cheryl}
+# path <- "C:/Users/74267/Documents/Data/Demux/V1-V2"
+# file.creation(path)
+# group.id <- "26.46"
+# decontam.preprocessing(group.id, Initial.path, Decontam.path)
+# asv.prune <- identify.contaminants(group.id, Decontam.path, 1)
+# decontam(group.id, asv.prune, 0.1, Initial.path, Decontam.path)
+# # "/storage1/fs1/leyao.wang/Active/Users/bquinn/Infant.Nasal.Microbiome/General.files/infant.nasal.csv"
+# phyloseq.processing(group.id, Initial.path, Decontam.path, Phyloseq.path, NULL, TRUE, FALSE)
+```
+
+```{r source tracker}
+phyloseq <- physeq1
+for (i in 1:nrow(sample_data(phyloseq))) {
+    x <- sample_data(phyloseq)[i, c("type")]
+    if(x=="MSA"||x=="MNA"||x=="MBM"||x=="MAS"){
+      sample_data(phyloseq)[i, c("group")] <- "mother"
+    } else if(x=="BST"||x=="BSA"||x=="BNA"){
+      sample_data(phyloseq)[i, c("group")] <- "baby"
+    }else if(x=="POS"||x=="Pos"||x=="pos"){
+      sample_data(phyloseq)[i, c("group")] <- "positive control"
+    # }else if(x=="H2O"){
+      # sample_data(phyloseq)[i, c("group")] <- "water"
+    }else{
+      sample_data(phyloseq)[i, c("group")] <- "negative control"
+    }
+  }
+physeq1 <- phyloseq
+
+sample_data(physeq1)
+physeq1.sub <- subset.object(physeq1, c("W39BNA","W46MSA","W46BNA"), "samID", remove=TRUE)
+physeq1.sub <- subset.object(physeq1.sub, c("mother", "baby"), "group")
+sample_data(physeq1.sub)
+sample_sums(physeq1.sub)
+physeq1.sub <- subset.object(subset.object(physeq1.sub, "BST", "type", remove=TRUE), "BSA", "type", remove=TRUE)
+#remove family 26
+#physeq1.sub <- subset.object(subset.object(physeq1.sub,"26", "family", remove=TRUE))
+install.packages("stringr")
+library("stringr")
+install.packages("biomformat")
+library("biomformat")
+
+sample_data(physeq1.sub)[,"type"] <- as.character(data.frame(sample_data(physeq1.sub))[,"type"])
+physeq1.sub <- sample.type.rename(physeq1.sub)
+sample_data(physeq1.sub)
+source.tracker.files(physeq1.sub, "C:/Users/74267/Documents/Data/Demux/V1-V2/v1-v2sourcetracker")
+
+identify.families(physeq1.sub)
+
+sample_data(subset.object(physeq1.sub, "26", "family"))
+
+
+
+
+path <- "C:/Users/74267/Documents/Data/Demux/V1-V2/v1-v2sourcetracker"
+phyloseq <- physeq1.sub
+
+if(dir.exists(paste0(path))==FALSE){
+    dir.create(paste0(path))
+  }
+  
+  families <- identify.families(phyloseq)
+  
+  for(a in 1:length(families)){
+    
+    if(dir.exists(paste0(path, "/", families[a]))==FALSE){
+      dir.create(paste0(path, "/", families[a]))
+    }
+
+    phyloseq.sub <- subset.object(phyloseq, families[a], "family")
+    rare.sink <- (min(sample_sums(subset.object(phyloseq.sub, c("baby"), "group"))))
+    rare.source <- (min(sample_sums(subset.object(phyloseq.sub, c("mother"), "group"))))
+    # rare <- (min(sample_sums(subset.object(phyloseq.sub, c("baby", "mother"), "group"))))
+    
+    # Taxa txt
+    tax <- as(tax_table(phyloseq.sub),"matrix")
+    tax_cols <- colnames(tax)
+    tax <- as.data.frame(tax)
+    tax$taxonomy <- do.call(paste, c(tax[tax_cols], sep=";"))
+    for(co in tax_cols) tax[co] <- NULL
+    colnames(tax) <- "Taxon"
+    tax[,"Feature ID"] <- rownames(tax)
+    tax <- tax[, c(2, 1)]
+    tax[,2] <- sapply(tax[,2], function(x) str_replace_all(x, ";", "_"))
+    write.table(tax, paste0(path, "/", families[a], "/tax.txt"), quote=FALSE, col.names=TRUE, row.names=FALSE, sep="\t")
+    
+    # OTU biom and txt
+    otu <- as.data.frame(t(as(otu_table(phyloseq.sub),"matrix")))
+    ncol <- ncol(otu)
+    otu[,"#OTU ID"] <- rownames(otu)
+    otu <- as(otu[,c(ncol+1, 1:ncol)],"matrix")
+    write.table(otu,paste0(path, "/", families[a], "/otu.txt"), sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+    
+    otu <- as.data.frame(t(as(otu_table(phyloseq.sub),"matrix")))
+    #if taxa_are_rows=TRUE
+    otu_biom <- make_biom(data=otu)
+    write_biom(otu_biom, paste0(path, "/", families[a], "/otu_biom.biom"))
+    
+    
+    # or from the phyloseq object, 't' to transform if taxa_are_rows=FALSE, no 't' if taxa_are_rows=TRUE
+    write.table(t(otu_table(phyloseq.sub)), paste0(path, "/", families[a], "/seqtab.txt"),sep="\t", row.names=TRUE, col.names=NA, quote=FALSE)
+    
+    # Export metadata (if you have a properly formatted metadata file that you imported in your phyloseq pipeline, you can skip this step and just use that text file directly in QIIME 2)
+    print(sample_data(phyloseq.sub))
+    #change sample_data to sample.to.data.frame
+    write.table(sample.to.data.frame(phyloseq.sub), paste0(path, "/", families[a], "/sample-metadata.txt"), sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+    
+    ## The Env is samID
+    map <- sample_data(phyloseq.sub)
+    for(b in 1:nrow(map)){
+      if(map[b, "type"]=="Mother nasal"||map[b, "type"]=="Mother saliva"||map[b, "type"]=="Mother milk"||map[b, "type"]=="Mother skin"){
+        map[b, "SourceSink"] <- "source"
+      }else{
+        map[b, "SourceSink"] <- "sink"
+      }
+    }
+    # map <- subset.object(data.frame(map), "POS", "type", TRUE)
+    map <- data.frame(map[,c("type", "SourceSink")])
+    colnames(map)[1] <- "Env"
+    map[,"#Sample ID"] <- rownames(map)
+    map[,"Env"] <- map[,"#Sample ID"]
+    map <- map[,c(3, 1, 2)]
+    write.table(map, paste0(path, "/", families[a], "/map.txt"), sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+    
+    # cat("\n", "\n", "\n", paste("# Source Tracker code for family", families[a]))
+    cat("\n", "\n", paste("# Source Tracker code for family", families[a]))
+    # cat("\n", "\n", paste("qiime tools import --type", paste0("'", "FeatureData[Taxonomy]", "'"), "\\"))
+    cat("\n", paste("qiime tools import --type", paste0("'", "FeatureData[Taxonomy]", "'"), "\\"))
+    cat("\n", paste("--input-path", paste0(path, "/", families[a], "/tax.txt"), "\\"))
+    cat("\n", paste("--input-format", "HeaderlessTSVTaxonomyFormat", "\\"))
+    cat("\n", paste("--output-path", paste0(path, "/", families[a], "/taxonomy.qza")))
+    
+    # cat("\n", "\n", paste("qiime tools import --type", paste0("'", "FeatureTable[Frequency]", "'"), "\\"))
+    # cat("\n", paste("--input-path", paste0(path, "/", form, "/otu_biom.biom"), "\\"))
+    # cat("\n", paste("--output-path", paste0(path, "/", form, "/otu.qza")))
+    
+    # cat("\n", "\n", paste("qiime tools import", "\\"))
+    cat("\n", paste("qiime tools import", "\\"))
+    cat("\n", paste("--input-path", paste0(path, "/", families[a], "/otu_biom.biom"), "\\"))
+    cat("\n", paste("--output-path", paste0(path, "/", families[a], "/otu.qza"), "\\"))
+    cat("\n", paste("--type", paste0("'", "FeatureTable[Frequency]", "'"), "\\"))
+    cat("\n", paste("--input-format", "BIOMV100Format"))
+    
+    # cat("\n", "\n", paste("qiime sourcetracker2 gibbs", "\\"))
+    cat("\n", paste("qiime sourcetracker2 gibbs", "\\"))
+    cat("\n", paste("--i-feature-table", paste0(path, "/", families[a], "/otu.qza"), "\\"))
+    cat("\n", paste("--m-sample-metadata-file", paste0(path, "/", families[a], "/map.txt"), "\\"))
+    cat("\n", paste("--p-source-sink-column", "SourceSink", "\\"))
+    cat("\n", paste("--p-no-loo", "\\"))
+    cat("\n", paste("--p-source-column-value", "source", "\\"))
+    cat("\n", paste("--p-sink-column-value", "sink", "\\"))
+    cat("\n", paste("--p-source-category-column", "Env", "\\"))
+    cat("\n", paste("--p-sink-rarefaction-depth", rare.sink, "\\"))
+    cat("\n", paste("--p-source-rarefaction-depth", rare.source, "\\"))
+    cat("\n", paste("--output-dir", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo")))
+    
+    # cat("\n", "\n", paste("qiime sourcetracker2 barplot", "\\"))
+    cat("\n", paste("qiime sourcetracker2 barplot", "\\"))
+    cat("\n", paste("--i-proportions", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/mixing_proportions.qza"), "\\"))
+    cat("\n", paste("--m-sample-metadata-file", paste0(path, "/", families[a], "/map.txt"), "\\"))
+    cat("\n", paste("--o-visualization", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/proportions-barplot.qzv")))
+    
+    # cat("\n", "\n", paste("qiime metadata tabulate", "\\"))
+    cat("\n", paste("qiime metadata tabulate", "\\"))
+    cat("\n", paste("--m-input-file", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/per_sink_assignments_map.qza"), "\\"))
+    cat("\n", paste("--o-visualization", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/per_sink_assignments_map.qzv")))
+    
+    # cat("\n", "\n", paste("qiime tools export", "\\"))
+    cat("\n", paste("qiime tools export", "\\"))
+    cat("\n", paste("--input-path", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/per_sink_assignments_map.qzv"), "\\"))
+    cat("\n", paste("--output-path", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/per_sink_assignments_map")))
+  }
+  
+```
+
+
+```{r sourceTracker GL}
+source.tracker.files <- function(phyloseq, path){
+  # phyloseq <- readRDS("/storage1/fs1/leyao.wang/Active/Users/bquinn/2023/1-50/Output/Processing/Phyloseq/phyloseq.pruned.1-50.asv.rds")
+  if(dir.exists(paste0(path))==FALSE){
+    dir.create(paste0(path))
+  }
+  
+  families <- identify.families(phyloseq)
+  
+  for(a in 1:length(families)){
+    
+    if(dir.exists(paste0(path, "/", families[a]))==FALSE){
+      dir.create(paste0(path, "/", families[a]))
+    }
+
+    phyloseq.sub <- subset.object(phyloseq, families[a], "family")
+    rare.sink <- (min(sample_sums(subset.object(phyloseq.sub, c("BNA","BSA","BST"), "type"))))
+    rare.source <- (min(sample_sums(subset.object(phyloseq.sub, c("MNA","MSA","MBM","MAS"), "type"))))
+    # rare <- (min(sample_sums(subset.object(phyloseq.sub, c("baby", "mother"), "group"))))
+    
+    # Taxa txt
+    tax <- as(tax_table(phyloseq.sub),"matrix")
+    tax_cols <- colnames(tax)
+    tax <- as.data.frame(tax)
+    tax$taxonomy <- do.call(paste, c(tax[tax_cols], sep=";"))
+    for(co in tax_cols) tax[co] <- NULL
+    colnames(tax) <- "Taxon"
+    tax[,"Feature ID"] <- rownames(tax)
+    tax <- tax[, c(2, 1)]
+    tax[,2] <- sapply(tax[,2], function(x) str_replace_all(x, ";", "_"))
+    write.table(tax, paste0(path, "/", families[a], "/tax.txt"), quote=FALSE, col.names=TRUE, row.names=FALSE, sep="\t")
+    
+    # OTU biom and txt
+    otu <- as.data.frame(t(as(otu_table(phyloseq.sub),"matrix")))
+    ncol <- ncol(otu)
+    otu[,"#OTU ID"] <- rownames(otu)
+    otu <- as(otu[,c(ncol+1, 1:ncol)],"matrix")
+    write.table(otu,paste0(path, "/", families[a], "/otu.txt"), sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+    
+    otu <- as.data.frame(t(as(otu_table(phyloseq.sub),"matrix")))
+    #if taxa_are_rows=TRUE
+    otu_biom <- make_biom(data=otu)
+    write_biom(otu_biom, paste0(path, "/", families[a], "/otu_biom.biom"))
+    
+    
+    # or from the phyloseq object, 't' to transform if taxa_are_rows=FALSE, no 't' if taxa_are_rows=TRUE
+    write.table(t(otu_table(phyloseq.sub)), paste0(path, "/", families[a], "/seqtab.txt"),sep="\t", row.names=TRUE, col.names=NA, quote=FALSE)
+    
+    # Export metadata (if you have a properly formatted metadata file that you imported in your phyloseq pipeline, you can skip this step and just use that text file directly in QIIME 2)
+    print(sample_data(phyloseq.sub))
+    write.table(sample_data(phyloseq.sub), paste0(path, "/", families[a], "/sample-metadata.txt"), sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+    
+    ## The Env is samID
+    map <- sample_data(phyloseq.sub)
+    for(b in 1:nrow(map)){
+      if(map[b, "type"]=="MNA"||map[b, "type"]=="MSA"||map[b, "type"]=="MBM"||map[b, "type"]=="MAS"){
+        map[b, "SourceSink"] <- "source"
+      }else{
+        map[b, "SourceSink"] <- "sink"
+      }
+    }
+    # map <- subset.object(data.frame(map), "POS", "type", TRUE)
+    map <- data.frame(map[,c("type", "SourceSink")])
+    colnames(map)[1] <- "Env"
+    map[,"#Sample ID"] <- rownames(map)
+    map[,"Env"] <- map[,"#Sample ID"]
+    map <- map[,c(3, 1, 2)]
+    write.table(map, paste0(path, "/", families[a], "/map.txt"), sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+    
+    # cat("\n", "\n", "\n", paste("# Source Tracker code for family", families[a]))
+    cat("\n", "\n", paste("# Source Tracker code for family", families[a]))
+    # cat("\n", "\n", paste("qiime tools import --type", paste0("'", "FeatureData[Taxonomy]", "'"), "\\"))
+    cat("\n", paste("qiime tools import --type", paste0("'", "FeatureData[Taxonomy]", "'"), "\\"))
+    cat("\n", paste("--input-path", paste0(path, "/", families[a], "/tax.txt"), "\\"))
+    cat("\n", paste("--input-format", "HeaderlessTSVTaxonomyFormat", "\\"))
+    cat("\n", paste("--output-path", paste0(path, "/", families[a], "/taxonomy.qza")))
+    
+    # cat("\n", "\n", paste("qiime tools import --type", paste0("'", "FeatureTable[Frequency]", "'"), "\\"))
+    # cat("\n", paste("--input-path", paste0(path, "/", form, "/otu_biom.biom"), "\\"))
+    # cat("\n", paste("--output-path", paste0(path, "/", form, "/otu.qza")))
+    
+    # cat("\n", "\n", paste("qiime tools import", "\\"))
+    cat("\n", paste("qiime tools import", "\\"))
+    cat("\n", paste("--input-path", paste0(path, "/", families[a], "/otu_biom.biom"), "\\"))
+    cat("\n", paste("--output-path", paste0(path, "/", families[a], "/otu.qza"), "\\"))
+    cat("\n", paste("--type", paste0("'", "FeatureTable[Frequency]", "'"), "\\"))
+    cat("\n", paste("--input-format", "BIOMV100Format"))
+    
+    # cat("\n", "\n", paste("qiime sourcetracker2 gibbs", "\\"))
+    cat("\n", paste("qiime sourcetracker2 gibbs", "\\"))
+    cat("\n", paste("--i-feature-table", paste0(path, "/", families[a], "/otu.qza"), "\\"))
+    cat("\n", paste("--m-sample-metadata-file", paste0(path, "/", families[a], "/map.txt"), "\\"))
+    cat("\n", paste("--p-source-sink-column", "SourceSink", "\\"))
+    cat("\n", paste("--p-no-loo", "\\"))
+    cat("\n", paste("--p-source-column-value", "source", "\\"))
+    cat("\n", paste("--p-sink-column-value", "sink", "\\"))
+    cat("\n", paste("--p-source-category-column", "Env", "\\"))
+    cat("\n", paste("--p-sink-rarefaction-depth", rare.sink, "\\"))
+    cat("\n", paste("--p-source-rarefaction-depth", rare.source, "\\"))
+    cat("\n", paste("--output-dir", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo")))
+    
+    # cat("\n", "\n", paste("qiime sourcetracker2 barplot", "\\"))
+    cat("\n", paste("qiime sourcetracker2 barplot", "\\"))
+    cat("\n", paste("--i-proportions", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/mixing_proportions.qza"), "\\"))
+    cat("\n", paste("--m-sample-metadata-file", paste0(path, "/", families[a], "/map.txt"), "\\"))
+    cat("\n", paste("--o-visualization", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/proportions-barplot.qzv")))
+    
+    # cat("\n", "\n", paste("qiime metadata tabulate", "\\"))
+    cat("\n", paste("qiime metadata tabulate", "\\"))
+    cat("\n", paste("--m-input-file", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/per_sink_assignments_map.qza"), "\\"))
+    cat("\n", paste("--o-visualization", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/per_sink_assignments_map.qzv")))
+    
+    # cat("\n", "\n", paste("qiime tools export", "\\"))
+    cat("\n", paste("qiime tools export", "\\"))
+    cat("\n", paste("--input-path", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/per_sink_assignments_map.qzv"), "\\"))
+    cat("\n", paste("--output-path", paste0(path, "/", families[a], "/qiime2results/sourcetracker-noloo/per_sink_assignments_map")))
+  }
+}
+```
+
+
+
+```{r Run source tracker GL}
+path <- "C:\Users\74267\Documents\Data\Demux\V1-V2"
+
+
+```
