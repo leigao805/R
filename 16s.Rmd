@@ -6,8 +6,8 @@ date: "2023-11-08"
 
 ```{r Inspect read quality profiles;Filter and trim;Learn the Error Rates;Sample Inference}
 library(dada2); packageVersion("dada2")
-setwd("C:/Users/74267/Documents/Data/Demux/V1-V2")
-path <- "C:/Users/74267/Documents/Data/Demux/V1-V2"
+setwd("D:/Data/Demux/V1-V2")
+path <- "D:/Data/Demux/V1-V2"
 list.files(path)
 
 fnFs <- sort(list.files(path, pattern="_F1_R1_001.fq.gz", full.names = TRUE))
@@ -59,17 +59,19 @@ track
 ```
 
 ```{r Assign taxonomy}
-taxa <- assignTaxonomy(seqtab.nochim, "C:/Users/74267/Documents/Data/Demux/silva_nr99_v138.1_wSpecies_train_set.fa.gz", multithread=TRUE)
+taxa <- assignTaxonomy(seqtab.nochim, "D:/Data/Demux/silva_nr99_v138.1_wSpecies_train_set.fa.gz", multithread=TRUE)
 taxa.print <- taxa
 rownames(taxa.print) <- NULL
 head(taxa.print)
 ```
+
 ```{r Handoff to phyloseq}
 library(phyloseq); packageVersion("phyloseq")
 library(Biostrings); packageVersion("Biostrings")
 library(ggplot2); packageVersion("ggplot2")
 theme_set(theme_bw())
 ```
+
 ```{r REASSIGN}
 form.reassign <- function(data.frame){
   for(a in 1:nrow(data.frame)){
